@@ -7,4 +7,16 @@ edition = "2024"
 arboard = "3.6.1"
 image = "0.25.10"
 tokio = { version = "1.53.1", features = ["full"] }
-windows = "0.62.2"
+
+[dependencies.windows]
+version = "0.62.2"
+features = [
+    "Foundation",
+    "Storage_Streams",
+    "Networking",                  # Required parent for Sockets
+    "Networking_Sockets",
+    "Devices",                     # Required parent for Bluetooth
+    "Devices_Bluetooth",           # Required parent for Rfcomm
+    "Devices_Bluetooth_Rfcomm",
+]
+
