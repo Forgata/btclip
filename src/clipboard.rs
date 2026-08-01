@@ -28,7 +28,7 @@ impl ClipboardManager {
         let dynamic_image = image::load_from_memory(compressed_bytes)
             .map_err(|e| format!("Failed to load image from bytes: {}", e))?;
 
-        let rgba_image = dynamic_image.into_rgb8();
+        let rgba_image = dynamic_image.into_rgba8();
         let (width, height) = rgba_image.dimensions();
 
         let raw_pixels = rgba_image.into_raw();
