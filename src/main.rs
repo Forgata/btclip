@@ -1,7 +1,8 @@
-// mod bluetooth;
+mod bluetooth;
 mod clipboard;
 mod protocol;
 
+use bluetooth::{BluetoothConnection, BluetoothServer};
 use std::{assert_eq, io::Cursor, println};
 
 use clipboard::ClipboardManager;
@@ -42,4 +43,28 @@ async fn main() {
         .expect("Failed to set image from bytes");
 
     println!("Image written to clipboard successfully.");
+
+    println!("Starting Bluetooth RFCOMM server...");
+
+    let (_server, mut rx): (BluetoothServer, tokio::sync::mpsc::Receiver<_>) =
+        match BluetoothServer::start().await {
+            Ok(server) => server,
+            Err(e) => {
+                println!("Failed to start Bluetooth server: {}", e);
+                return;
+            }
+        };
+
+    if let Some(mut connection) = rx.recv().await {
+        println!("Connection accepted from Bluetooth client!");
+
+        let test_payload = b"Hello from Rust PC!";
+        let frame = protocol::encode_frame(protocol::FrameType::Text, test_payload);
+
+        if let Err(e) = connection.write_bytes(&frame).await {
+            eprintln!("Failed to send welcome payload: {}", e);
+        } else {
+            println!("Sent test welcome frame over Bluetooth socket!");
+        }
+    }
 }
