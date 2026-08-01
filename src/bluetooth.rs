@@ -1,3 +1,4 @@
+use std::future::IntoFuture;
 use tokio::sync::mpsc;
 use windows::Devices::Bluetooth::Rfcomm::{RfcommServiceId, RfcommServiceProvider};
 use windows::Foundation::TypedEventHandler;
@@ -6,7 +7,6 @@ use windows::Networking::Sockets::{
 };
 use windows::Storage::Streams::{DataReader, DataWriter, InputStreamOptions};
 use windows::core::GUID;
-use windows::core::IAsynchronous;
 use windows::core::Ref;
 
 pub const APP_UUID: u128 = 0x8ce255c0200a11e0ac640800200c9a66u128;
@@ -33,6 +33,7 @@ impl BluetoothServer {
             .map_err(|e| format!("failed to call createAsync"))?;
 
         let provider = provider_op
+            .into_future()
             .await
             .map_err(|e| format!("Failed to initialize RfcommServiceProvider: {}", e))?;
 
@@ -66,6 +67,7 @@ impl BluetoothServer {
         listener
             .BindServiceNameAsync(&service_name)
             .map_err(|e| format!("Failed to bind listener: {}", e))?
+            .into_future()
             .await
             .map_err(|e| format!("Failed to complete listener bind: {}", e))?;
 
@@ -111,11 +113,11 @@ impl BluetoothConnection {
     }
 
     pub async fn read_bytes(&mut self, count: u32) -> Result<Vec<u8>, String> {
-        // Change: Use .get() on the WinRT operation
         let loaded = self
             .reader
             .LoadAsync(count)
             .map_err(|e| format!("Failed LoadAsync: {}", e))?
+            .into_future()
             .await
             .map_err(|e| format!("Failed to load bytes from socket: {}", e))?;
 
@@ -136,10 +138,10 @@ impl BluetoothConnection {
             .WriteBytes(bytes)
             .map_err(|e| format!("Failed to write bytes: {}", e))?;
 
-        // Change: Use .get() here as well
         self.writer
             .StoreAsync()
             .map_err(|e| format!("Failed StoreAsync: {}", e))?
+            .into_future()
             .await
             .map_err(|e| format!("Failed to flush bytes to socket: {}", e))?;
 
