@@ -6,9 +6,7 @@ use windows::Networking::Sockets::{
     StreamSocket, StreamSocketListener, StreamSocketListenerConnectionReceivedEventArgs,
 };
 use windows::Storage::Streams::{DataReader, DataWriter, InputStreamOptions};
-use windows::core::{GUID, Ref};
-
-pub const APP_UUID: u128 = 0x8ce255c0200a11e0ac640800200c9a66u128;
+use windows::core::Ref;
 
 pub struct BluetoothServer {
     _provider: RfcommServiceProvider,
@@ -31,9 +29,8 @@ pub struct BluetoothConnection {
 
 impl BluetoothServer {
     pub async fn start() -> Result<(Self, mpsc::Receiver<BluetoothConnection>), String> {
-        let guid = GUID::from_u128(APP_UUID);
-        let service_id = RfcommServiceId::FromUuid(guid)
-            .map_err(|e| format!("failed to create service id: {}", e))?;
+        let service_id = RfcommServiceId::SerialPort()
+            .map_err(|e| format!("failed to create standard SerialPort service id: {}", e))?;
 
         let provider_op = RfcommServiceProvider::CreateAsync(&service_id)
             .map_err(|e| format!("failed to call createAsync: {}", e))?;
@@ -77,10 +74,6 @@ impl BluetoothServer {
             .await
             .map_err(|e| format!("Failed to complete listener bind: {}", e))?;
 
-        // ------------------------------------------------------------------
-        // FIX: Start advertising using radio discoverability.
-        // This forces Windows to safely auto-generate standard SDP attributes.
-        // ------------------------------------------------------------------
         provider
             .StartAdvertisingWithRadioDiscoverability(&listener, true)
             .map_err(|e| {
