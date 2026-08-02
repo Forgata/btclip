@@ -14,6 +14,7 @@ pub struct BluetoothServer {
 }
 
 pub struct BluetoothReader {
+    _socket: StreamSocket,
     reader: DataReader,
 }
 
@@ -83,7 +84,7 @@ impl BluetoothServer {
                 )
             })?;
 
-        println!("📡 Bluetooth RFCOMM Server advertising successfully!");
+        println!("Bluetooth RFCOMM Server advertising successfully!");
 
         Ok((
             Self {
@@ -123,6 +124,7 @@ impl BluetoothConnection {
     pub fn into_split(self) -> (BluetoothReader, BluetoothWriter) {
         (
             BluetoothReader {
+                _socket: self._socket,
                 reader: self.reader,
             },
             BluetoothWriter {
