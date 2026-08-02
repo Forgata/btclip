@@ -1,70 +1,147 @@
+// src/main.rs
 mod bluetooth;
 mod clipboard;
 mod protocol;
 
-use bluetooth::{BluetoothConnection, BluetoothServer};
-use std::{assert_eq, io::Cursor, println};
-
+use bluetooth::BluetoothServer;
 use clipboard::ClipboardManager;
-use image::{DynamicImage, ImageFormat, RgbImage};
+use protocol::{FrameType, ProtocolError, decode_frame, encode_frame};
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+use tokio::sync::Mutex;
+use tokio::time::sleep;
 
 #[tokio::main]
 async fn main() {
-    let mut clipboard_manager = match ClipboardManager::new() {
-        Ok(manager) => manager,
+    println!("⚡ btclip Windows Host Engine starting...");
+
+    // 1. Initialize Thread-Safe State
+    let clipboard = match ClipboardManager::new() {
+        Ok(mgr) => Arc::new(Mutex::new(mgr)),
         Err(e) => {
-            println!("Failed to initialize clipboard manager: {}", e);
+            eprintln!(" Failed to initialize clipboard: {}", e);
             return;
         }
     };
 
-    println!("testing text write");
-    clipboard_manager.set_text("hello frim firgata!").unwrap();
+    let is_internal_write = Arc::new(AtomicBool::new(false));
 
-    let current_text = clipboard_manager.get_text().unwrap();
-    println!("Current clipboard text: {}", current_text);
-    assert_eq!(current_text, "hello frim firgata!");
-
-    println!("testing image write");
-    let mut image = RgbImage::new(100, 100);
-
-    for pixel in image.pixels_mut() {
-        *pixel = image::Rgb([0, 0, 255]);
-    }
-
-    let mut compressed_bytes: Vec<u8> = Vec::new();
-
-    DynamicImage::ImageRgb8(image)
-        .write_to(&mut Cursor::new(&mut compressed_bytes), ImageFormat::Png)
-        .expect("Failed to write image to buffer");
-
-    clipboard_manager
-        .set_image_from_bytes(&compressed_bytes)
-        .expect("Failed to set image from bytes");
-
-    println!("Image written to clipboard successfully.");
-
-    println!("Starting Bluetooth RFCOMM server...");
-
-    let (_server, mut rx): (BluetoothServer, tokio::sync::mpsc::Receiver<_>) =
-        match BluetoothServer::start().await {
-            Ok(server) => server,
-            Err(e) => {
-                println!("Failed to start Bluetooth server: {}", e);
-                return;
-            }
-        };
-
-    if let Some(mut connection) = rx.recv().await {
-        println!("Connection accepted from Bluetooth client!");
-
-        let test_payload = b"Hello from Rust PC!";
-        let frame = protocol::encode_frame(protocol::FrameType::Text, test_payload);
-
-        if let Err(e) = connection.write_bytes(&frame).await {
-            eprintln!("Failed to send welcome payload: {}", e);
-        } else {
-            println!("Sent test welcome frame over Bluetooth socket!");
+    // 2. Start RFCOMM Server
+    let (_server, mut rx) = match BluetoothServer::start().await {
+        Ok(res) => res,
+        Err(e) => {
+            eprintln!(" Failed to start Bluetooth server: {}", e);
+            return;
         }
+    };
+
+    println!(" Waiting for phone connection...");
+
+    // 3. Main Connection Loop
+    while let Some(connection) = rx.recv().await {
+        println!(" Phone connected over Bluetooth!");
+
+        let (mut reader, mut writer) = connection.into_split();
+        let read_clipboard = Arc::clone(&clipboard);
+        let write_clipboard = Arc::clone(&clipboard);
+        let read_flag = Arc::clone(&is_internal_write);
+        let write_flag = Arc::clone(&is_internal_write);
+
+        // ------------------------------------------------------------------
+        // TASK 1: Read Loop (Phone -> PC)
+        // ------------------------------------------------------------------
+        let read_handle = tokio::spawn(async move {
+            loop {
+                // Read 5-byte header
+                let header_bytes = match reader.read_bytes(5).await {
+                    Ok(b) => b,
+                    Err(e) => {
+                        eprintln!(" Phone disconnected (Header Read): {}", e);
+                        break;
+                    }
+                };
+
+                // Decode length from header
+                let mut len_bytes = [0u8; 4];
+                len_bytes.copy_from_slice(&header_bytes[1..5]);
+                let payload_len = u32::from_be_bytes(len_bytes);
+
+                // Read full payload
+                let payload_bytes = match reader.read_bytes(payload_len).await {
+                    Ok(b) => b,
+                    Err(e) => {
+                        eprintln!("📡 Phone disconnected (Payload Read): {}", e);
+                        break;
+                    }
+                };
+
+                // Combine into single frame buffer for protocol decoding
+                let mut raw_frame = Vec::with_capacity(5 + payload_len as usize);
+                raw_frame.extend_from_slice(&header_bytes);
+                raw_frame.extend_from_slice(&payload_bytes);
+
+                match decode_frame(&raw_frame) {
+                    Ok(frame) => match frame.frame_type {
+                        FrameType::Text => {
+                            if let Ok(text) = String::from_utf8(frame.payload) {
+                                println!(" Received Text from Phone: '{}'", text);
+                                read_flag.store(true, Ordering::SeqCst);
+                                let mut clip = read_clipboard.lock().await;
+                                let _ = clip.set_text(&text);
+                            }
+                        }
+                        FrameType::Image => {
+                            println!("Received Screenshot from Phone ({} bytes)", frame.length);
+                            read_flag.store(true, Ordering::SeqCst);
+                            let mut clip = read_clipboard.lock().await;
+                            if let Err(e) = clip.set_image_from_bytes(&frame.payload) {
+                                eprintln!("❌ Failed to write screenshot to OS: {}", e);
+                            } else {
+                                println!(" Screenshot pasted to PC clipboard!");
+                            }
+                        }
+                    },
+                    Err(e) => eprintln!("❌ Invalid protocol frame received: {:?}", e),
+                }
+            }
+        });
+
+        let write_handle = tokio::spawn(async move {
+            let mut last_copied_text = String::new();
+
+            loop {
+                sleep(Duration::from_millis(400)).await;
+
+                // Lock clipboard to check current text
+                let current_text = {
+                    let mut clip = write_clipboard.lock().await;
+                    clip.get_text().unwrap_or_default()
+                };
+
+                // Check if text changed
+                if !current_text.is_empty() && current_text != last_copied_text {
+                    if write_flag.swap(false, Ordering::SeqCst) {
+                        // Skip writing back to phone because this text came FROM the phone
+                        last_copied_text = current_text;
+                        continue;
+                    }
+
+                    println!("Local PC Text copied: '{}'", current_text);
+                    last_copied_text = current_text.clone();
+
+                    let frame = encode_frame(FrameType::Text, current_text.as_bytes());
+                    if let Err(e) = writer.write_bytes(&frame).await {
+                        eprintln!("Phone disconnected during write: {}", e);
+                        break;
+                    }
+                }
+            }
+        });
+
+        // Wait until connection drops
+        let _ = tokio::join!(read_handle, write_handle);
+        println!("Returned to listening state for next phone connection...");
     }
 }
