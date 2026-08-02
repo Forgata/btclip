@@ -7,6 +7,8 @@ edition = "2024"
 arboard = "3.6.1"
 image = "0.25.10"
 tokio = { version = "1.53.1", features = ["full"] }
+widestring = "0.4"
+winapi = { version = "0.3", features = ["winuser", "shellapi"] }
 
 [dependencies.windows]
 version = "0.62.2"
@@ -18,5 +20,8 @@ features = [
     "Devices",                     # Required parent for Bluetooth
     "Devices_Bluetooth",           # Required parent for Rfcomm
     "Devices_Bluetooth_Rfcomm",
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Shell",
 ]
 
