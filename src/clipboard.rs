@@ -1,5 +1,9 @@
 use arboard::{Clipboard, ImageData};
+use image::{DynamicImage, ImageFormat, RgbaImage};
 use std::borrow::Cow;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::io::Cursor;
 
 pub struct ClipboardManager {
     clipboard: Clipboard,
@@ -43,5 +47,36 @@ impl ClipboardManager {
             .map_err(|e| format!("failed to set image: {}", e))?;
 
         Ok(())
+    }
+
+    /// Checks if the raw image on the clipboard has changed.
+    /// Returns Some((new_hash, png_bytes)) if a new image is found.
+    pub fn check_image_changed(&mut self, last_hash: u64) -> Option<(u64, Vec<u8>)> {
+        let image_data = match self.clipboard.get_image() {
+            Ok(data) => data,
+            Err(_) => return None,
+        };
+
+        let mut hasher = DefaultHasher::new();
+        image_data.bytes.hash(&mut hasher);
+        let current_hash = hasher.finish();
+
+        if current_hash != last_hash {
+            if let Some(rgba_image) = RgbaImage::from_raw(
+                image_data.width as u32,
+                image_data.height as u32,
+                image_data.bytes.into_owned(),
+            ) {
+                let mut compressed_bytes = Vec::new();
+                if DynamicImage::ImageRgba8(rgba_image)
+                    .write_to(&mut Cursor::new(&mut compressed_bytes), ImageFormat::Png)
+                    .is_ok()
+                {
+                    return Some((current_hash, compressed_bytes));
+                }
+            }
+        }
+
+        None
     }
 }
