@@ -10,8 +10,10 @@ use std::os::windows::ffi::OsStringExt;
 use std::path::PathBuf;
 use std::ptr;
 use winapi::um::shellapi::DragQueryFileW;
+use winapi::um::winbase::{GlobalLock, GlobalSize, GlobalUnlock};
 use winapi::um::winuser::{
-    CF_HDROP, CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
+    CF_DIB, CF_DIBV5, CF_HDROP, CloseClipboard, GetClipboardData, IsClipboardFormatAvailable,
+    OpenClipboard,
 };
 
 pub struct ClipboardManager {
@@ -61,31 +63,53 @@ impl ClipboardManager {
     /// Checks if the raw image on the clipboard has changed.
     /// Returns Some((new_hash, png_bytes)) if a new image is found.
     pub fn check_image_changed(&mut self, last_hash: u64) -> Option<(u64, Vec<u8>)> {
-        let image_data = match self.clipboard.get_image() {
-            Ok(data) => data,
+        let image_result = self.clipboard.get_image();
+
+        let (current_hash, compressed_bytes) = match image_result {
+            Ok(image_data) => {
+                let mut hasher = DefaultHasher::new();
+                image_data.bytes.hash(&mut hasher);
+                let current_hash = hasher.finish();
+
+                let png_bytes = if let Some(rgba_image) = RgbaImage::from_raw(
+                    image_data.width as u32,
+                    image_data.height as u32,
+                    image_data.bytes.into_owned(),
+                ) {
+                    let mut compressed_bytes = Vec::new();
+                    if DynamicImage::ImageRgba8(rgba_image)
+                        .write_to(&mut Cursor::new(&mut compressed_bytes), ImageFormat::Png)
+                        .is_ok()
+                    {
+                        Some(compressed_bytes)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                (current_hash, png_bytes)
+            }
             Err(e) => {
-                eprintln!("clipboard: get_image() failed: {:?}", e);
+                eprintln!(
+                    "clipboard: get_image() failed: {:?}, falling back to DIB",
+                    e
+                );
+                if let Some((hash, png_bytes)) = self.load_clipboard_dib_image() {
+                    return if hash != last_hash {
+                        Some((hash, png_bytes))
+                    } else {
+                        None
+                    };
+                }
                 return None;
             }
         };
 
-        let mut hasher = DefaultHasher::new();
-        image_data.bytes.hash(&mut hasher);
-        let current_hash = hasher.finish();
-
-        if current_hash != last_hash {
-            if let Some(rgba_image) = RgbaImage::from_raw(
-                image_data.width as u32,
-                image_data.height as u32,
-                image_data.bytes.into_owned(),
-            ) {
-                let mut compressed_bytes = Vec::new();
-                if DynamicImage::ImageRgba8(rgba_image)
-                    .write_to(&mut Cursor::new(&mut compressed_bytes), ImageFormat::Png)
-                    .is_ok()
-                {
-                    return Some((current_hash, compressed_bytes));
-                }
+        if let Some(png_bytes) = compressed_bytes {
+            if current_hash != last_hash {
+                return Some((current_hash, png_bytes));
             }
         }
 
@@ -96,14 +120,103 @@ impl ClipboardManager {
     /// performing PNG compression. Useful to seed `last_image_hash` at startup
     /// to avoid an initial send of the current clipboard image.
     pub fn get_image_hash(&mut self) -> Option<u64> {
-        let image_data = match self.clipboard.get_image() {
-            Ok(data) => data,
-            Err(_) => return None,
-        };
+        match self.clipboard.get_image() {
+            Ok(image_data) => {
+                let mut hasher = DefaultHasher::new();
+                image_data.bytes.hash(&mut hasher);
+                Some(hasher.finish())
+            }
+            Err(_) => self.load_clipboard_dib_hash(),
+        }
+    }
 
-        let mut hasher = DefaultHasher::new();
-        image_data.bytes.hash(&mut hasher);
-        Some(hasher.finish())
+    fn load_clipboard_dib_hash(&mut self) -> Option<u64> {
+        self.load_clipboard_dib_image().map(|(hash, _)| hash)
+    }
+
+    fn load_clipboard_dib_image(&mut self) -> Option<(u64, Vec<u8>)> {
+        unsafe {
+            if OpenClipboard(ptr::null_mut()) == 0 {
+                return None;
+            }
+
+            let format = if IsClipboardFormatAvailable(CF_DIBV5) != 0 {
+                CF_DIBV5
+            } else if IsClipboardFormatAvailable(CF_DIB) != 0 {
+                CF_DIB
+            } else {
+                CloseClipboard();
+                return None;
+            };
+
+            let handle = GetClipboardData(format);
+            if handle.is_null() {
+                CloseClipboard();
+                return None;
+            }
+
+            let mem = GlobalLock(handle as _);
+            if mem.is_null() {
+                CloseClipboard();
+                return None;
+            }
+
+            let size = GlobalSize(handle as _) as usize;
+            if size == 0 {
+                GlobalUnlock(handle as _);
+                CloseClipboard();
+                return None;
+            }
+
+            let slice = std::slice::from_raw_parts(mem as *const u8, size);
+            let header_size = u32::from_le_bytes(slice.get(0..4)?.try_into().ok()?) as usize;
+            let palette_bytes = if header_size >= 40 && slice.len() >= 40 {
+                let bit_count = u16::from_le_bytes(slice.get(14..16)?.try_into().ok()?);
+                let colors_used = u32::from_le_bytes(slice.get(32..36)?.try_into().ok()?);
+                let num_colors = if colors_used != 0 {
+                    colors_used
+                } else if bit_count <= 8 {
+                    1 << bit_count
+                } else {
+                    0
+                };
+                (num_colors as usize).saturating_mul(4)
+            } else {
+                0
+            };
+
+            let bmp_offset = 14 + header_size + palette_bytes;
+            let mut bmp = Vec::with_capacity(14 + size);
+            bmp.extend_from_slice(b"BM");
+            bmp.extend_from_slice(&((14 + size) as u32).to_le_bytes());
+            bmp.extend_from_slice(&0u16.to_le_bytes());
+            bmp.extend_from_slice(&0u16.to_le_bytes());
+            bmp.extend_from_slice(&(bmp_offset as u32).to_le_bytes());
+            bmp.extend_from_slice(slice);
+
+            GlobalUnlock(handle as _);
+            CloseClipboard();
+
+            let image = image::load_from_memory(&bmp).ok()?;
+            let rgba_image = image.into_rgba8();
+            let mut hasher = DefaultHasher::new();
+            rgba_image.as_raw().hash(&mut hasher);
+            let current_hash = hasher.finish();
+
+            let mut compressed_bytes = Vec::new();
+            if DynamicImage::ImageRgba8(rgba_image)
+                .write_to(&mut Cursor::new(&mut compressed_bytes), ImageFormat::Png)
+                .is_ok()
+            {
+                return Some((current_hash, compressed_bytes));
+            }
+
+            None
+        }
+    }
+
+    pub fn get_file_image_hash(&mut self) -> Option<u64> {
+        self.check_filelist_image(0).map(|(hash, _)| hash)
     }
 
     /// Try to read an image file path from the clipboard CF_HDROP and load it.
