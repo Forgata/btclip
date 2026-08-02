@@ -113,7 +113,9 @@ async fn main() {
 
             let mut last_image_hash: u64 = {
                 let mut clip = write_clipboard.lock().await;
-                clip.get_image_hash().unwrap_or(0)
+                clip.get_file_image_hash()
+                    .or_else(|| clip.get_image_hash())
+                    .unwrap_or(0)
             };
 
             loop {
@@ -158,16 +160,25 @@ async fn main() {
                         continue;
                     }
 
-                    println!(
-                        "Local PC Image copied! Sending {} bytes...",
-                        png_bytes.len()
-                    );
-                    last_image_hash = new_hash;
-
                     let frame = encode_frame(FrameType::Image, &png_bytes);
-                    if let Err(e) = writer.write_bytes(&frame).await {
-                        eprintln!("Phone disconnected during image write: {}", e);
-                        break;
+                    match tokio::time::timeout(Duration::from_secs(20), writer.write_bytes(&frame))
+                        .await
+                    {
+                        Ok(Ok(())) => {
+                            last_image_hash = new_hash;
+                            println!(
+                                "Local PC Image copied! Sent {} bytes successfully.",
+                                png_bytes.len()
+                            );
+                        }
+                        Ok(Err(e)) => {
+                            eprintln!("Phone disconnected during image write: {}", e);
+                            break;
+                        }
+                        Err(_) => {
+                            eprintln!("Phone image write timed out after 20 seconds");
+                            break;
+                        }
                     }
                 }
             }
