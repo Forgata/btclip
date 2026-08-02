@@ -19,6 +19,7 @@ pub struct BluetoothReader {
 }
 
 pub struct BluetoothWriter {
+    _socket: StreamSocket,
     writer: DataWriter,
 }
 
@@ -124,10 +125,11 @@ impl BluetoothConnection {
     pub fn into_split(self) -> (BluetoothReader, BluetoothWriter) {
         (
             BluetoothReader {
-                _socket: self._socket,
+                _socket: self._socket.clone(),
                 reader: self.reader,
             },
             BluetoothWriter {
+                _socket: self._socket,
                 writer: self.writer,
             },
         )
