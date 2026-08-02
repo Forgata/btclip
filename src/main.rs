@@ -110,7 +110,11 @@ async fn main() {
                 let mut clip = write_clipboard.lock().await;
                 clip.get_text().unwrap_or_default()
             };
-            let mut last_image_hash: u64 = 0;
+
+            let mut last_image_hash: u64 = {
+                let mut clip = write_clipboard.lock().await;
+                clip.get_image_hash().unwrap_or(0)
+            };
 
             loop {
                 sleep(Duration::from_millis(400)).await;
@@ -123,13 +127,15 @@ async fn main() {
                         _ => None,
                     };
 
-                    let img_opt = if text_opt.is_none() {
+                    let file_opt = clip.check_filelist_image(last_image_hash);
+
+                    let img_opt = if file_opt.is_none() {
                         clip.check_image_changed(last_image_hash)
                     } else {
                         None
                     };
 
-                    (text_opt, img_opt)
+                    (text_opt, file_opt.or(img_opt))
                 };
 
                 if let Some(text) = text_to_send {
@@ -138,7 +144,7 @@ async fn main() {
                         continue;
                     }
 
-                    println!("📤 Local PC Text copied: '{}'", text);
+                    println!("Local PC Text copied: '{}'", text);
                     last_copied_text = text.clone();
 
                     let frame = encode_frame(FrameType::Text, text.as_bytes());
@@ -153,7 +159,7 @@ async fn main() {
                     }
 
                     println!(
-                        "🖼️ Local PC Image copied! Sending {} bytes...",
+                        "Local PC Image copied! Sending {} bytes...",
                         png_bytes.len()
                     );
                     last_image_hash = new_hash;
