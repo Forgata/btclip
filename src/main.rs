@@ -106,28 +106,61 @@ async fn main() {
         });
 
         let write_handle = tokio::spawn(async move {
-            let mut last_copied_text = String::new();
+            let mut last_copied_text = {
+                let mut clip = write_clipboard.lock().await;
+                clip.get_text().unwrap_or_default()
+            };
+            let mut last_image_hash: u64 = 0;
 
             loop {
                 sleep(Duration::from_millis(400)).await;
 
-                let current_text = {
+                let (text_to_send, image_to_send) = {
                     let mut clip = write_clipboard.lock().await;
-                    clip.get_text().unwrap_or_default()
+
+                    let text_opt = match clip.get_text() {
+                        Ok(text) if !text.is_empty() && text != last_copied_text => Some(text),
+                        _ => None,
+                    };
+
+                    let img_opt = if text_opt.is_none() {
+                        clip.check_image_changed(last_image_hash)
+                    } else {
+                        None
+                    };
+
+                    (text_opt, img_opt)
                 };
 
-                if !current_text.is_empty() && current_text != last_copied_text {
+                if let Some(text) = text_to_send {
                     if write_flag.swap(false, Ordering::SeqCst) {
-                        last_copied_text = current_text;
+                        last_copied_text = text;
                         continue;
                     }
 
-                    println!("Local PC Text copied: '{}'", current_text);
-                    last_copied_text = current_text.clone();
+                    println!("📤 Local PC Text copied: '{}'", text);
+                    last_copied_text = text.clone();
 
-                    let frame = encode_frame(FrameType::Text, current_text.as_bytes());
+                    let frame = encode_frame(FrameType::Text, text.as_bytes());
                     if let Err(e) = writer.write_bytes(&frame).await {
                         eprintln!("Phone disconnected during write: {}", e);
+                        break;
+                    }
+                } else if let Some((new_hash, png_bytes)) = image_to_send {
+                    if write_flag.swap(false, Ordering::SeqCst) {
+                        last_image_hash = new_hash;
+                        continue;
+                    }
+
+                    println!(
+                        "🖼️ Local PC Image copied! Sending {} bytes...",
+                        png_bytes.len()
+                    );
+                    last_image_hash = new_hash;
+
+                    let frame = encode_frame(FrameType::Image, &png_bytes);
+                    if let Err(e) = writer.write_bytes(&frame).await {
+                        eprintln!("Phone disconnected during image write: {}", e);
                         break;
                     }
                 }
