@@ -138,22 +138,29 @@ impl BluetoothConnection {
 
 impl BluetoothReader {
     pub async fn read_bytes(&mut self, count: u32) -> Result<Vec<u8>, String> {
-        let loaded = self
-            .reader
-            .LoadAsync(count)
-            .map_err(|e| format!("Failed LoadAsync: {}", e))?
-            .into_future()
-            .await
-            .map_err(|e| format!("Failed to load bytes: {}", e))?;
+        let mut buffer = Vec::with_capacity(count as usize);
 
-        if loaded < count {
-            return Err("Socket disconnected before reading required bytes".to_string());
+        while buffer.len() < count as usize {
+            let remaining = (count as usize - buffer.len()) as u32;
+            let loaded = self
+                .reader
+                .LoadAsync(remaining)
+                .map_err(|e| format!("Failed LoadAsync: {}", e))?
+                .into_future()
+                .await
+                .map_err(|e| format!("Failed to load bytes: {}", e))?;
+
+            if loaded == 0 {
+                return Err("Socket disconnected before reading required bytes".to_string());
+            }
+
+            let mut chunk = vec![0u8; loaded as usize];
+            self.reader
+                .ReadBytes(&mut chunk)
+                .map_err(|e| format!("Failed to read bytes: {}", e))?;
+
+            buffer.extend_from_slice(&chunk);
         }
-
-        let mut buffer: Vec<u8> = vec![0u8; count as usize];
-        self.reader
-            .ReadBytes(&mut buffer)
-            .map_err(|e| format!("Failed to read bytes: {}", e))?;
 
         Ok(buffer)
     }
@@ -161,16 +168,24 @@ impl BluetoothReader {
 
 impl BluetoothWriter {
     pub async fn write_bytes(&mut self, bytes: &[u8]) -> Result<(), String> {
-        self.writer
-            .WriteBytes(bytes)
-            .map_err(|e| format!("Failed to write bytes: {}", e))?;
+        const CHUNK_SIZE: usize = 16 * 1024;
+        let mut offset = 0;
 
-        self.writer
-            .StoreAsync()
-            .map_err(|e| format!("Failed StoreAsync: {}", e))?
-            .into_future()
-            .await
-            .map_err(|e| format!("Failed to flush bytes: {}", e))?;
+        while offset < bytes.len() {
+            let end = (offset + CHUNK_SIZE).min(bytes.len());
+            self.writer
+                .WriteBytes(&bytes[offset..end])
+                .map_err(|e| format!("Failed to write bytes: {}", e))?;
+
+            self.writer
+                .StoreAsync()
+                .map_err(|e| format!("Failed StoreAsync: {}", e))?
+                .into_future()
+                .await
+                .map_err(|e| format!("Failed to flush bytes: {}", e))?;
+
+            offset = end;
+        }
 
         Ok(())
     }
