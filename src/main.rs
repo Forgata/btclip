@@ -16,7 +16,7 @@ const MAX_PAYLOAD_SIZE: u32 = 20 * 1024 * 1024; // 20 MB
 
 #[tokio::main]
 async fn main() {
-    println!("⚡ btclip Windows Host Engine starting...");
+    println!("btclip Windows Host Engine starting...");
 
     let clipboard = match ClipboardManager::new() {
         Ok(mgr) => Arc::new(Mutex::new(mgr)),
@@ -69,7 +69,7 @@ async fn main() {
                 let payload_bytes = match reader.read_bytes(payload_len).await {
                     Ok(b) => b,
                     Err(e) => {
-                        eprintln!("🔌 Phone disconnected (Payload Read): {}", e);
+                        eprintln!("Phone disconnected (Payload Read): {}", e);
                         break;
                     }
                 };
