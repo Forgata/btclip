@@ -78,62 +78,19 @@ impl BluetoothServer {
             .map_err(|e| format!("Failed to complete listener bind: {}", e))?;
 
         // ------------------------------------------------------------------
-        // FIX: Build and Inject a Fully Compliant Minimal SDP Record Map
-        // ------------------------------------------------------------------
-        let sdp_attributes = provider
-            .SdpRawAttributes()
-            .map_err(|e| format!("Failed to get SDP attributes map: {}", e))?;
-
-        // 1. Service Name Attribute (ID: 0x0100)
-        let sdp_service_name_id = 0x0100u32;
-        let mut sdp_payload = vec![0x0Cu8, 0x06u8]; // Type: Text String (0x0C), Length: 6
-        sdp_payload.extend_from_slice(b"btclip");
-
-        let writer =
-            DataWriter::new().map_err(|e| format!("Failed to create SDP DataWriter: {}", e))?;
-        writer
-            .WriteBytes(&sdp_payload)
-            .map_err(|e| format!("Failed to write payload: {}", e))?;
-        let buffer = writer
-            .DetachBuffer()
-            .map_err(|e| format!("Failed to detach buffer: {}", e))?;
-        sdp_attributes
-            .Insert(sdp_service_name_id, &buffer)
-            .map_err(|e| format!("Failed to insert name: {}", e))?;
-
-        // 2. Protocol Descriptor List Attribute (ID: 0x0004) - Crucial for Android to find the RFCOMM port
-        let sdp_protocol_list_id = 0x0004u32;
-        // Data Element Sequence enclosing L2CAP and RFCOMM parameters
-        let protocol_payload = vec![
-            0x35, 0x0C, // Data Element Sequence (0x35), 12 bytes total payload
-            0x35, 0x03, // Nested Sequence for L2CAP (3 bytes)
-            0x19, 0x01, 0x00, // UUID (0x19), L2CAP Protocol UUID (0x0100)
-            0x35, 0x05, // Nested Sequence for RFCOMM (5 bytes)
-            0x19, 0x00, 0x03, // UUID (0x19), RFCOMM Protocol UUID (0x0003)
-            0x08,
-            0x01, // Unsigned Integer (0x08), Channel 1 placeholder (OS overwrites this dynamically)
-        ];
-
-        let proto_writer = DataWriter::new()
-            .map_err(|e| format!("Failed to create Protocol DataWriter: {}", e))?;
-        proto_writer
-            .WriteBytes(&protocol_payload)
-            .map_err(|e| format!("Failed to write protocol payload: {}", e))?;
-        let proto_buffer = proto_writer
-            .DetachBuffer()
-            .map_err(|e| format!("Failed to detach protocol buffer: {}", e))?;
-        sdp_attributes
-            .Insert(sdp_protocol_list_id, &proto_buffer)
-            .map_err(|e| format!("Failed to insert protocol mapping: {}", e))?;
-
-        // ------------------------------------------------------------------
-        // Start Advertising
+        // FIX: Start advertising using radio discoverability.
+        // This forces Windows to safely auto-generate standard SDP attributes.
         // ------------------------------------------------------------------
         provider
-            .StartAdvertising(&listener)
-            .map_err(|e| format!("Failed to start advertising: {}", e))?;
+            .StartAdvertisingWithRadioDiscoverability(&listener, true)
+            .map_err(|e| {
+                format!(
+                    "Failed setup step for StartAdvertisingWithRadioDiscoverability: {}",
+                    e
+                )
+            })?;
 
-        println!("📡 Bluetooth RFCOMM Server advertising successfully with valid SDP footprint...");
+        println!("📡 Bluetooth RFCOMM Server advertising successfully!");
 
         Ok((
             Self {
