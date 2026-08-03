@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">BTClip</string>
+    <string name="notification_title">BTClip Sync</string>
+    <string name="notification_text">Bluetooth clipboard sync is running.</string>
+    <string name="notification_channel_name">BTClip Sync</string>
+    <string name="notification_channel_description">Bluetooth clipboard sync foreground service.</string>
+    <string name="status_started">Bluetooth clipboard sync service started.</string>
+    <string name="permissions_needed">Bluetooth permissions are required to start sync.</string>
+</resources>

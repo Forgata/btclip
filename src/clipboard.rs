@@ -91,11 +91,7 @@ impl ClipboardManager {
 
                 (current_hash, png_bytes)
             }
-            Err(e) => {
-                eprintln!(
-                    "clipboard: get_image() failed: {:?}, falling back to DIB",
-                    e
-                );
+            Err(_) => {
                 if let Some((hash, png_bytes)) = self.load_clipboard_dib_image() {
                     return if hash != last_hash {
                         Some((hash, png_bytes))
@@ -227,112 +223,52 @@ impl ClipboardManager {
                 if IsClipboardFormatAvailable(CF_HDROP) != 0 {
                     let h = GetClipboardData(CF_HDROP);
                     if !h.is_null() {
-                        eprintln!("clipboard: CF_HDROP handle received");
                         let count = DragQueryFileW(h as _, 0xFFFFFFFFu32, ptr::null_mut(), 0);
-                        eprintln!("clipboard: CF_HDROP file count = {}", count);
                         if count > 0 {
                             let len = DragQueryFileW(h as _, 0, ptr::null_mut(), 0) as usize;
-                            eprintln!("clipboard: CF_HDROP first file path length = {}", len);
                             if len > 0 {
                                 let mut buf: Vec<u16> = vec![0u16; len + 1];
                                 let copied =
                                     DragQueryFileW(h as _, 0, buf.as_mut_ptr(), (len + 1) as u32);
-                                eprintln!("clipboard: CF_HDROP copied chars = {}", copied);
                                 if copied > 0 {
                                     let mut trimmed = &buf[..copied as usize];
                                     while let Some(&0) = trimmed.last() {
                                         trimmed = &trimmed[..trimmed.len() - 1];
                                     }
-                                    eprintln!("clipboard: CF_HDROP raw utf16 = {:?}", trimmed);
                                     let path = OsString::from_wide(trimmed);
-                                    let path_str = path.to_string_lossy();
-                                    eprintln!("clipboard: CF_HDROP path = {}", path_str);
                                     let p = PathBuf::from(path);
                                     if p.exists() {
-                                        eprintln!("clipboard: CF_HDROP path exists");
-                                        match fs::read(&p) {
-                                            Ok(bytes) => {
-                                                eprintln!(
-                                                    "clipboard: CF_HDROP read {} bytes",
-                                                    bytes.len()
-                                                );
-                                                match image::load_from_memory(&bytes) {
-                                                    Ok(img) => {
-                                                        let rgba_image = img.into_rgba8();
-                                                        let mut hasher = DefaultHasher::new();
-                                                        rgba_image.as_raw().hash(&mut hasher);
-                                                        let current_hash = hasher.finish();
-                                                        eprintln!(
-                                                            "clipboard: CF_HDROP image loaded {}x{} hash={} last_hash={}",
-                                                            rgba_image.width(),
-                                                            rgba_image.height(),
+                                        if let Ok(bytes) = fs::read(&p) {
+                                            if let Ok(img) = image::load_from_memory(&bytes) {
+                                                let rgba_image = img.into_rgba8();
+                                                let mut hasher = DefaultHasher::new();
+                                                rgba_image.as_raw().hash(&mut hasher);
+                                                let current_hash = hasher.finish();
+                                                if current_hash != last_hash {
+                                                    let mut compressed_bytes = Vec::new();
+                                                    if DynamicImage::ImageRgba8(rgba_image)
+                                                        .write_to(
+                                                            &mut Cursor::new(&mut compressed_bytes),
+                                                            ImageFormat::Png,
+                                                        )
+                                                        .is_ok()
+                                                    {
+                                                        CloseClipboard();
+                                                        return Some((
                                                             current_hash,
-                                                            last_hash
-                                                        );
-                                                        if current_hash != last_hash {
-                                                            let mut compressed_bytes = Vec::new();
-                                                            match DynamicImage::ImageRgba8(
-                                                                rgba_image,
-                                                            )
-                                                            .write_to(
-                                                                &mut Cursor::new(
-                                                                    &mut compressed_bytes,
-                                                                ),
-                                                                ImageFormat::Png,
-                                                            ) {
-                                                                Ok(_) => {
-                                                                    eprintln!(
-                                                                        "clipboard: CF_HDROP PNG compression succeeded"
-                                                                    );
-                                                                    CloseClipboard();
-                                                                    return Some((
-                                                                        current_hash,
-                                                                        compressed_bytes,
-                                                                    ));
-                                                                }
-                                                                Err(e) => {
-                                                                    eprintln!(
-                                                                        "clipboard: CF_HDROP PNG compression failed: {:?}",
-                                                                        e
-                                                                    );
-                                                                }
-                                                            }
-                                                        } else {
-                                                            eprintln!(
-                                                                "clipboard: CF_HDROP image hash matches last_hash"
-                                                            );
-                                                        }
-                                                    }
-                                                    Err(e) => {
-                                                        eprintln!(
-                                                            "clipboard: CF_HDROP image load failed: {:?}",
-                                                            e
-                                                        );
+                                                            compressed_bytes,
+                                                        ));
                                                     }
                                                 }
                                             }
-                                            Err(e) => {
-                                                eprintln!(
-                                                    "clipboard: CF_HDROP failed to read file: {:?}",
-                                                    e
-                                                );
-                                            }
                                         }
-                                    } else {
-                                        eprintln!("clipboard: CF_HDROP path does not exist");
                                     }
                                 }
                             }
                         }
-                    } else {
-                        eprintln!("clipboard: CF_HDROP data handle is null");
                     }
-                } else {
-                    eprintln!("clipboard: CF_HDROP format not available");
                 }
                 CloseClipboard();
-            } else {
-                eprintln!("clipboard: failed to open clipboard");
             }
         }
 
