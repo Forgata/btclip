@@ -6,6 +6,7 @@ use bluetooth::BluetoothServer;
 use clipboard::ClipboardManager;
 use protocol::{FrameType, decode_frame, encode_frame};
 
+use std::println;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
