@@ -1,1 +1,8 @@
 /target
+keys.txt
+.vscode/
+*.iml
+client/.gradle/
+client/build/
+client/app/build/
+client/local.properties
